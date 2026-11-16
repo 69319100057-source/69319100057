@@ -1,0 +1,6 @@
+{
+  "name": "KlangLedger — ระบบจัดการรายรับรายจ่าย",
+  "description": "เว็บจัดการรายรับรายจ่าย สรุปผลรายเดือน พร้อมกราฟวิเคราะห์ข้อมูล เชื่อมต่อ Firebase (db-57f7c) และเข้าสู่ระบบด้วย Gmail",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

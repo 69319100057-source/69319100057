@@ -1,0 +1,285 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Global Helpers ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll([
+          'uid',
+          'email',
+          'displayName',
+          'photoURL',
+          'defaultMonthlyBudget',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'email',
+          'displayName',
+          'photoURL',
+          'defaultMonthlyBudget',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.uid is string
+        && data.uid.size() >= 1
+        && data.uid.size() <= 128
+        && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.uid == userId
+        && data.uid == request.auth.uid
+        && data.email is string
+        && data.email.size() >= 3
+        && data.email.size() <= 254
+        && data.displayName is string
+        && data.displayName.size() >= 1
+        && data.displayName.size() <= 120
+        && data.photoURL is string
+        && data.photoURL.size() <= 500
+        && data.defaultMonthlyBudget is number
+        && data.defaultMonthlyBudget >= 0
+        && data.defaultMonthlyBudget <= 1000000000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTransaction(data, userId) {
+      return data.keys().hasAll([
+          'userId',
+          'type',
+          'amount',
+          'category',
+          'title',
+          'note',
+          'date',
+          'monthKey',
+          'paymentMethod',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'userId',
+          'type',
+          'amount',
+          'category',
+          'title',
+          'note',
+          'date',
+          'monthKey',
+          'paymentMethod',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.userId is string
+        && data.userId.size() >= 1
+        && data.userId.size() <= 128
+        && data.userId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.userId == userId
+        && data.userId == request.auth.uid
+        && data.type is string
+        && data.type.size() <= 16
+        && data.type in ['income', 'expense']
+        && data.amount is number
+        && data.amount > 0
+        && data.amount <= 1000000000
+        && data.category is string
+        && data.category.size() >= 1
+        && data.category.size() <= 60
+        && data.category.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.title is string
+        && data.title.size() >= 1
+        && data.title.size() <= 120
+        && data.note is string
+        && data.note.size() <= 500
+        && data.date is string
+        && data.date.size() == 10
+        && data.date.matches('^\\d{4}-\\d{2}-\\d{2}$')
+        && data.monthKey is string
+        && data.monthKey.size() == 7
+        && data.monthKey.matches('^\\d{4}-\\d{2}$')
+        && data.date[0:7] == data.monthKey
+        && data.paymentMethod is string
+        && data.paymentMethod.size() <= 32
+        && data.paymentMethod in ['cash', 'bank_transfer', 'promptpay', 'credit_card', 'e_wallet', 'other']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidMonthlyBudget(data, userId, budgetId) {
+      return data.keys().hasAll([
+          'userId',
+          'monthKey',
+          'limitAmount',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'userId',
+          'monthKey',
+          'limitAmount',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.userId is string
+        && data.userId.size() >= 1
+        && data.userId.size() <= 128
+        && data.userId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.userId == userId
+        && data.userId == request.auth.uid
+        && data.monthKey is string
+        && data.monthKey.size() == 7
+        && data.monthKey.matches('^\\d{4}-\\d{2}$')
+        && data.monthKey == budgetId
+        && data.limitAmount is number
+        && data.limitAmount >= 0
+        && data.limitAmount <= 1000000000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // --- User Profile Collection ---
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+      allow create: if isVerified()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action: Update profile details or monthly budget default
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'email',
+            'displayName',
+            'photoURL',
+            'defaultMonthlyBudget',
+            'updatedAt'
+          ])
+        );
+      allow delete: if false;
+
+      // --- Transactions Subcollection ---
+      match /transactions/{transactionId} {
+        allow get: if isValidId(userId)
+          && isValidId(transactionId)
+          && isOwner(userId)
+          && existing().userId == request.auth.uid;
+        allow list: if isValidId(userId)
+          && isOwner(userId)
+          && existing().userId == request.auth.uid;
+        allow create: if isVerified()
+          && isValidId(userId)
+          && isValidId(transactionId)
+          && isOwner(userId)
+          && isValidTransaction(incoming(), userId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId));
+        allow update: if isVerified()
+          && isValidId(userId)
+          && isValidId(transactionId)
+          && isOwner(userId)
+          && isValidTransaction(incoming(), userId)
+          && incoming().userId == existing().userId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            // Action: Edit transaction details
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'type',
+              'amount',
+              'category',
+              'title',
+              'note',
+              'date',
+              'monthKey',
+              'paymentMethod',
+              'updatedAt'
+            ])
+          );
+        allow delete: if isVerified()
+          && isValidId(userId)
+          && isValidId(transactionId)
+          && isOwner(userId)
+          && existing().userId == request.auth.uid;
+      }
+
+      // --- Monthly Budgets Subcollection ---
+      match /budgets/{budgetId} {
+        allow get: if isValidId(userId)
+          && isValidId(budgetId)
+          && isOwner(userId)
+          && existing().userId == request.auth.uid;
+        allow list: if isValidId(userId)
+          && isOwner(userId)
+          && existing().userId == request.auth.uid;
+        allow create: if isVerified()
+          && isValidId(userId)
+          && isValidId(budgetId)
+          && isOwner(userId)
+          && isValidMonthlyBudget(incoming(), userId, budgetId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId));
+        allow update: if isVerified()
+          && isValidId(userId)
+          && isValidId(budgetId)
+          && isOwner(userId)
+          && isValidMonthlyBudget(incoming(), userId, budgetId)
+          && incoming().userId == existing().userId
+          && incoming().monthKey == existing().monthKey
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            // Action: Update monthly budget target
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'limitAmount',
+              'updatedAt'
+            ])
+          );
+        allow delete: if isVerified()
+          && isValidId(userId)
+          && isValidId(budgetId)
+          && isOwner(userId)
+          && existing().userId == request.auth.uid;
+      }
+    }
+  }
+}
